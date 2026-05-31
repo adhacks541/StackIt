@@ -2,9 +2,9 @@ const express = require('express')
 const { body, validationResult } = require('express-validator')
 const Question = require('../models/Question')
 const Answer = require('../models/Answer')
-const User = require('../models/User')
-const { authenticateToken, requireAdmin } = require('../middleware/auth')
+const { authenticateToken } = require('../middleware/auth')
 const { acceptAnswer } = require('../services/answerAcceptance')
+const { voteOnContent, sendVoteResponse } = require('../services/voting')
 
 const router = express.Router()
 
@@ -377,51 +377,18 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 // @access  Private
 router.post('/:id/upvote', authenticateToken, async (req, res) => {
   try {
-    console.log('⬆️ Question upvote called:', req.params.id, 'User:', req.user._id);
-    const question = await Question.findById(req.params.id).populate('author', 'username');
+    const result = await voteOnContent({
+      model: Question,
+      contentId: req.params.id,
+      voter: req.user,
+      voteType: 'upvote',
+      contentType: 'question'
+    })
 
-    if (!question || question.isDeleted) {
-      return res.status(404).json({ message: 'Question not found' });
-    }
-
-    const userId = req.user._id.toString();
-    const existingUpvote = question.votes.upvotes.find(vote => vote.user.toString() === userId);
-    const existingDownvote = question.votes.downvotes.find(vote => vote.user.toString() === userId);
-    
-    if (existingUpvote) {
-      // Remove upvote (toggle off)
-      question.votes.upvotes = question.votes.upvotes.filter(vote => vote.user.toString() !== userId);
-      console.log('⬆️ Question upvote removed');
-    } else {
-      // Add upvote and remove downvote if exists
-      question.votes.upvotes.push({ user: req.user._id });
-      question.votes.downvotes = question.votes.downvotes.filter(vote => vote.user.toString() !== userId);
-      console.log('⬆️ Question upvote added');
-      
-      // Create notification for question author (if not self)
-      if (question.author._id.toString() !== req.user._id.toString()) {
-        try {
-          const notification = await require('../models/Notification').create({
-            recipient: question.author._id,
-            sender: req.user._id,
-            type: 'upvote',
-            questionId: question._id
-          });
-          console.log('📩 Notification created:', notification);
-        } catch (error) {
-          console.error('❌ Error creating question upvote notification:', error);
-        }
-      }
-    }
-    
-    await question.save();
-    await question.populate('author', 'username reputation avatar');
-    
-    console.log('✅ Question upvote successful. New vote count:', question.voteCount);
-    res.status(200).json(question);
+    sendVoteResponse(res, { ...result, contentType: 'question' })
   } catch (error) {
     console.error('❌ Question upvote error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error', error: error.message });
   }
 });
 
@@ -430,51 +397,18 @@ router.post('/:id/upvote', authenticateToken, async (req, res) => {
 // @access  Private
 router.post('/:id/downvote', authenticateToken, async (req, res) => {
   try {
-    console.log('⬇️ Question downvote called:', req.params.id, 'User:', req.user._id);
-    const question = await Question.findById(req.params.id).populate('author', 'username');
+    const result = await voteOnContent({
+      model: Question,
+      contentId: req.params.id,
+      voter: req.user,
+      voteType: 'downvote',
+      contentType: 'question'
+    })
 
-    if (!question || question.isDeleted) {
-      return res.status(404).json({ message: 'Question not found' });
-    }
-
-    const userId = req.user._id.toString();
-    const existingDownvote = question.votes.downvotes.find(vote => vote.user.toString() === userId);
-    const existingUpvote = question.votes.upvotes.find(vote => vote.user.toString() === userId);
-    
-    if (existingDownvote) {
-      // Remove downvote (toggle off)
-      question.votes.downvotes = question.votes.downvotes.filter(vote => vote.user.toString() !== userId);
-      console.log('⬇️ Question downvote removed');
-    } else {
-      // Add downvote and remove upvote if exists
-      question.votes.downvotes.push({ user: req.user._id });
-      question.votes.upvotes = question.votes.upvotes.filter(vote => vote.user.toString() !== userId);
-      console.log('⬇️ Question downvote added');
-      
-      // Create notification for question author (if not self)
-      if (question.author._id.toString() !== req.user._id.toString()) {
-        try {
-          const notification = await require('../models/Notification').create({
-            recipient: question.author._id,
-            sender: req.user._id,
-            type: 'downvote',
-            questionId: question._id
-          });
-          console.log('📩 Notification created:', notification);
-        } catch (error) {
-          console.error('❌ Error creating question downvote notification:', error);
-        }
-      }
-    }
-    
-    await question.save();
-    await question.populate('author', 'username reputation avatar');
-    
-    console.log('✅ Question downvote successful. New vote count:', question.voteCount);
-    res.status(200).json(question);
+    sendVoteResponse(res, { ...result, contentType: 'question' })
   } catch (error) {
     console.error('❌ Question downvote error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error', error: error.message });
   }
 });
 
@@ -496,33 +430,20 @@ router.post('/:id/vote', [
       })
     }
 
-    const question = await Question.findById(req.params.id)
-
-    if (!question || question.isDeleted) {
-      return res.status(404).json({ message: 'Question not found' })
-    }
-
-    // Check if user can vote
-    if (!req.user.canVote()) {
-      return res.status(403).json({ message: 'Insufficient reputation to vote' })
-    }
-
     const { voteType } = req.body
 
-    await question.addVote(req.user._id, voteType)
-
-    // Update author reputation
-    const reputationChange = voteType === 'upvote' ? 10 : -2
-    await question.author.updateReputation(reputationChange)
-
-    res.json({
-      message: 'Vote recorded successfully',
-      voteCount: question.voteCount,
-      totalVotes: question.totalVotes
+    const result = await voteOnContent({
+      model: Question,
+      contentId: req.params.id,
+      voter: req.user,
+      voteType,
+      contentType: 'question'
     })
+
+    sendVoteResponse(res, { ...result, contentType: 'question' })
   } catch (error) {
     console.error('Vote error:', error)
-    res.status(500).json({ message: 'Server error' })
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error' })
   }
 })
 
