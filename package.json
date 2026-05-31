@@ -17,10 +17,12 @@
   "keywords": ["qa", "forum", "stackoverflow", "questions", "answers"],
   "author": "StackIt Team",
   "license": "MIT",
+  "dependencies": {
+    "mongoose": "^8.0.0"
+  },
   "devDependencies": {
     "concurrently": "^8.2.2",
     "jest": "^29.7.0",
-    "supertest": "^6.3.3",
-    "mongoose": "^8.0.0"
+    "supertest": "^6.3.3"
   }
 } 
